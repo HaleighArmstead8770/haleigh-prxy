@@ -1,11 +1,16 @@
 const http = require("http");
 const https = require("https");
 
-const TARGET = process.env.TARGET_DOMAIN;
+let TARGET = process.env.TARGET_DOMAIN;
 const PORT = process.env.PORT || 3000;
 
 if (!TARGET) {
   throw new Error("TARGET_DOMAIN required");
+}
+
+// 👉 по умолчанию HTTPS
+if (!/^https?:\/\//i.test(TARGET)) {
+  TARGET = "https://" + TARGET;
 }
 
 const targetUrl = new URL(TARGET);
@@ -30,13 +35,30 @@ const server = http.createServer((req, res) => {
     headers,
   };
 
-  const proxyReq = (targetUrl.protocol === "https:" ? https : http).request(
-    options,
-    (proxyRes) => {
-      res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
-      proxyRes.pipe(res, { end: true });
+  const client = targetUrl.protocol === "https:" ? https : http;
+
+  const proxyReq = client.request(options, (proxyRes) => {
+    const responseHeaders = { ...proxyRes.headers };
+
+    // 👉 фикс редиректов (чтобы не уводило с прокси)
+    if (responseHeaders.location) {
+      try {
+        const locationUrl = new URL(responseHeaders.location, TARGET);
+
+        if (locationUrl.hostname === targetUrl.hostname) {
+          responseHeaders.location =
+            locationUrl.pathname +
+            locationUrl.search +
+            locationUrl.hash;
+        }
+      } catch (e) {
+        // ignore invalid location
+      }
     }
-  );
+
+    res.writeHead(proxyRes.statusCode || 500, responseHeaders);
+    proxyRes.pipe(res, { end: true });
+  });
 
   proxyReq.on("error", (err) => {
     console.error("Proxy error:", err.message);
@@ -50,5 +72,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Proxy running on port ${PORT}, target: ${TARGET}`);
+  console.log(`Proxy running on port ${PORT}`);
+  console.log(`Target: ${TARGET}`);
 });
